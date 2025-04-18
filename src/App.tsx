@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
 /* Imports */
-import { Button, Container, Graphics, HeatLegend, Root, color as am5color, p50 as am5p50, p100 as am5p100, percent as am5percent, Slider, Label, Circle } from "@amcharts/amcharts5/index";
+import { Button, Container, Graphics, HeatLegend, Root, color as am5color, p0 as am5p0, p50 as am5p50, p100 as am5p100, percent as am5percent, Slider, Label, Circle } from "@amcharts/amcharts5/index";
 import * as am5map from "@amcharts/amcharts5/map";
 import am5geodataWorldLow from "@amcharts/amcharts5-geodata/worldLow";
 // import am5geodataUSALow from "@amcharts/amcharts5-geodata/usaLow";
@@ -94,7 +94,7 @@ function AmChartsMap() {
       panY: "none",
       projection: am5map.geoMercator(),
       // projection: am5map.geoAlbersUsa(),
-      layout: root.horizontalLayout
+      layout: root.horizontalLayout,
     }));
 
     // Create polygon series
@@ -123,7 +123,17 @@ function AmChartsMap() {
       maxValue: field === "percentValue" ? 50 : undefined,
     }]);
 
-    const heatLegend = chart.children.push(HeatLegend.new(root, {
+    const heatLegendContainer = chart.children.push(Container.new(root, {
+      layout: root.horizontalLayout,
+      // Make this container be on the top of the page (y=0)
+      x: am5percent(85),
+      centerX: am5percent(85),
+      y: am5p0,
+      centerY: am5p0,
+      width: am5percent(100),
+    }));
+
+    const heatLegend = heatLegendContainer.children.push(HeatLegend.new(root, {
       orientation: "horizontal",
       startColor: am5color(0xd3a29f),
       startValue: 0,
@@ -316,7 +326,7 @@ function AmChartsMap() {
     }
   }, [field]);
 
-  return <div style={{ width: "100%", height: "100vh" }} id="chartdiv" />
+  return <div style={{ width: "100%", height: "95vh" }} id="chartdiv" />
 }
 
 
