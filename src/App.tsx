@@ -1,18 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
 /* Imports */
-import { Button, Container, Graphics, HeatLegend, Root, color as am5color, p50 as am5p50, p100 as am5p100, percent as am5percent, Slider, Label } from "@amcharts/amcharts5/index";
+import { Button, Container, Graphics, HeatLegend, Root, color as am5color, p50 as am5p50, p100 as am5p100, percent as am5percent, Slider, Label, Circle } from "@amcharts/amcharts5/index";
 import * as am5map from "@amcharts/amcharts5/map";
 import am5geodataWorldLow from "@amcharts/amcharts5-geodata/worldLow";
 // import am5geodataUSALow from "@amcharts/amcharts5-geodata/usaLow";
 import am5themes_Animated from "@amcharts/amcharts5/themes/Animated";
-import dayjs, { Dayjs } from 'dayjs';
+import dayjs from 'dayjs';
 import { DataItem, IComponentDataItem } from '@amcharts/amcharts5/.internal/core/render/Component';
-import { FLATTENED_TARIFF_DATA, FlattenedTariffDataEntry, TariffType } from './data';
+import { FLATTENED_TARIFF_DATA, FlattenedTariffDataEntry, TariffType, Valid2DigitCountryCodesWithoutUSA } from './data';
 
-
-interface EffectiveTariff extends IComponentDataItem, FlattenedTariffDataEntry {
-}
 
 const dates = [...FLATTENED_TARIFF_DATA.keys()];
 
@@ -37,34 +34,40 @@ function formatLargeMoney(value: number) {
   return `$${valueTo100ths} ${specifier}`;
 }
 
+type AmChartsData = ({ id: Valid2DigitCountryCodesWithoutUSA, approxValueFormatted?: string } & Partial<Pick<FlattenedTariffDataEntry, Exclude<keyof FlattenedTariffDataEntry, "id" | "date" | "type">>>) & IComponentDataItem;
 
-function AmChartsMap({
-  field = "percentValue", type = "announced"
-}: {
-  field: Exclude<keyof FlattenedTariffDataEntry, "id" | "date" | "type">,
-  type: TariffType
-}) {
-  const [dateIndex, setDateIndex] = useState<number>(0);
-  const [chart, setChart] = useState<am5map.MapChart | null>(null);
+function AmChartsMap() {
+  const [field, setField] = useState<Exclude<keyof FlattenedTariffDataEntry, "id" | "date" | "type">>("percentValue");
+  const [type, setType] = useState<TariffType>("announced");
+  const [dateIndex, setDateIndex] = useState<number>(-1);
   const [polygonSeries, setPolygonSeries] = useState<am5map.MapPolygonSeries | null>(null);
   const dateIndexRef = useRef(dateIndex); // Need to pass this value into a callback in the use effect
+  const oldData = useRef<AmChartsData[]>([]);
 
   useEffect(() => {
     if (polygonSeries) {
-      const mappedData = FLATTENED_TARIFF_DATA.get(dates[dateIndex])!.filter((d) => d.type === type).map(d => {
+      const mappedData: AmChartsData[] = dateIndex === -1 ? [] : FLATTENED_TARIFF_DATA.get(dates[dateIndex])!.filter((d) => d.type === type).map(d => {
         return {
           id: d.id,
           [field]: d[field],
           approxValueFormatted: field === "approximateValueOfImportsImpacted" ? formatLargeMoney(d.approximateValueOfImportsImpacted) : undefined,
         };
       });
-      console.log(mappedData);
       polygonSeries.data.setAll(mappedData);
-      if (chart) {
-        polygonSeries.mapPolygons.values.forEach(polygon => polygon.appear(1000));
-      }
+      const diffItems = mappedData.filter((d) => {
+        const oldItem = oldData.current.find((old) => old.id === d.id);
+        if (!oldItem) {
+          return true;
+        }
+        const isDifferent = oldItem[field] !== d[field];
+        return isDifferent;
+      }).map(d => d.id);
+      oldData.current = mappedData;
+      polygonSeries.mapPolygons.values
+        .filter(polygon => polygon.dataItem && diffItems.includes((polygon.dataItem as DataItem<AmChartsData>).get("id")))
+        .forEach(polygon => polygon.appear(1000));
     }
-  }, [polygonSeries, chart, dateIndex, field, type]);
+  }, [polygonSeries, dateIndex, field, type]);
 
   useEffect(() => {
     if (polygonSeries) {
@@ -94,7 +97,6 @@ function AmChartsMap({
       layout: root.horizontalLayout
     }));
 
-    setChart(chart);
     // Create polygon series
     const polygonSeries = chart.series.push(am5map.MapPolygonSeries.new(root, {
       // geoJSON: am5geodataUSALow,
@@ -133,7 +135,7 @@ function AmChartsMap({
     }));
 
     polygonSeries.mapPolygons.template.events.on("pointerover", function (ev) {
-      heatLegend.showValue(Number((ev.target.dataItem as DataItem<EffectiveTariff>).get(field)));
+      heatLegend.showValue(Number((ev.target.dataItem as DataItem<AmChartsData>).get(field)));
     });
 
     heatLegend.startLabel.setAll({
@@ -150,13 +152,14 @@ function AmChartsMap({
     polygonSeries.events.on("datavalidated", function () {
       // console.log({ low: polygonSeries.getPrivate("valueLow"), high: polygonSeries.getPrivate("valueHigh") });
       // const low = polygonSeries.getPrivate("valueLow")!;
-      const high = polygonSeries.getPrivate("valueHigh")!;
+      const high = polygonSeries.getPrivate("valueHigh") ?? 0;
       // heatLegend.set("startValue", polygonSeries.getPrivate("valueLow"));
       // heatLegend.set("endValue", Math.max(polygonSeries.getPrivate("valueHigh") ?? 0, 100));
       if (field !== "percentValue") {
+        const endValue = Math.max(high, 1_000_000);
         heatLegend.setAll({
-          endValue: Math.max(high, 100),
-          endText: formatLargeMoney(high),
+          endValue,
+          endText: formatLargeMoney(endValue),
         });
       }
     })
@@ -173,8 +176,8 @@ function AmChartsMap({
       y: am5p100,
       centerX: am5p50,
       centerY: am5p100,
-      x: am5p50,
-      width: am5percent(90),
+      x: am5percent(50),
+      width: am5percent(135),
       layout: root.horizontalLayout,
       paddingBottom: 10
     }));
@@ -189,7 +192,6 @@ function AmChartsMap({
     }));
 
     const slider = container.children.push(Slider.new(root, {
-      //width: am5.percent(80),
       orientation: "horizontal",
       start: 0,
       centerY: am5p50
@@ -219,7 +221,7 @@ function AmChartsMap({
 
     slider.events.on("rangechanged", function () {
       const lastDateMillis = dayjs(dates[dates.length - 1]).valueOf();
-      const firstDateMillis = dayjs(dates[0]).valueOf();
+      const firstDateMillis = dayjs("2025-01-20").valueOf(); // Inauguration date
       // var year = firstYear + Math.round(slider.get("start", 0) * (lastYear - firstYear));
       const nextDateMillis = firstDateMillis + Math.round(slider.get("start", 0) * (lastDateMillis - firstDateMillis));
       const nextDate = dayjs(nextDateMillis);
@@ -229,9 +231,85 @@ function AmChartsMap({
       if (potentialNextDateIndex === -1) {
         setDateIndex(dates.length - 1);
       } else {
-        setDateIndex(potentialNextDateIndex === 0 ? 0 : (potentialNextDateIndex - 1));
+        setDateIndex(potentialNextDateIndex - 1);
       }
     });
+
+    const typeContainer = chart.children.push(Container.new(root, {
+      layout: root.horizontalLayout,
+      x: am5percent(85),
+      centerX: am5p100,
+      y: am5percent(100),
+      dy: -40
+    }));
+
+    // Add labels and controls
+    typeContainer.children.push(Label.new(root, {
+      centerY: am5p50,
+      text: "Announced"
+    }));
+
+    const typeSwitchButton = typeContainer.children.push(Button.new(root, {
+      themeTags: ["switch"],
+      centerY: am5p50,
+      icon: Circle.new(root, {
+        themeTags: ["icon"]
+      }),
+      active: type === "effective",
+    }));
+
+    typeSwitchButton.on("active", function () {
+      if (!typeSwitchButton.get("active")) {
+        setType("announced");
+      } else {
+        setType("effective");
+      }
+    });
+
+    typeContainer.children.push(
+      Label.new(root, {
+        centerY: am5p50,
+        text: "Effective"
+      })
+    );
+
+    const fieldContainer = chart.children.push(Container.new(root, {
+      layout: root.horizontalLayout,
+      x: am5percent(15),
+      centerX: am5p100,
+      y: am5percent(100),
+      dy: -40
+    }));
+
+    // Add labels and controls
+    fieldContainer.children.push(Label.new(root, {
+      centerY: am5p50,
+      text: "Percent"
+    }));
+
+    const fieldSwitchButton = fieldContainer.children.push(Button.new(root, {
+      themeTags: ["switch"],
+      centerY: am5p50,
+      icon: Circle.new(root, {
+        themeTags: ["icon"]
+      }),
+      active: field === "approximateValueOfImportsImpacted",
+    }));
+
+    fieldSwitchButton.on("active", function () {
+      if (!fieldSwitchButton.get("active")) {
+        setField("percentValue")
+      } else {
+        setField("approximateValueOfImportsImpacted")
+      }
+    });
+
+    fieldContainer.children.push(
+      Label.new(root, {
+        centerY: am5p50,
+        text: "Approximate Value of Imports"
+      })
+    );
 
     return () => {
       root.dispose();
@@ -244,8 +322,8 @@ function AmChartsMap({
 
 function App() {
   return (
-    <AmChartsMap field='approximateValueOfImportsImpacted' type='announced' />
+    <AmChartsMap />
   )
 }
 
-export default App
+export default App;
