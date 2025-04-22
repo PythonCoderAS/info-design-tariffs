@@ -34,19 +34,49 @@ function formatLargeMoney(value: number) {
   return `$${valueTo100ths} ${specifier}`;
 }
 
-type AmChartsData = ({ id: Valid2DigitCountryCodesWithoutUSA, approxValueFormatted?: string } & Partial<Pick<FlattenedTariffDataEntry, Exclude<keyof FlattenedTariffDataEntry, "id" | "date" | "type">>>) & IComponentDataItem;
+interface AmChartsData extends IComponentDataItem, Partial<Pick<FlattenedTariffDataEntry, Exclude<keyof FlattenedTariffDataEntry, "id" | "date" | "type" | "color">>> {
+  id: Valid2DigitCountryCodesWithoutUSA;
+  approxValueFormatted?: string;
+}
 
 function AmChartsMap() {
-  const [field, setField] = useState<Exclude<keyof FlattenedTariffDataEntry, "id" | "date" | "type">>("percentValue");
+  const [field, setField] = useState<Exclude<keyof FlattenedTariffDataEntry, "id" | "date" | "type" | "color">>("percentValue");
   const [type, setType] = useState<TariffType>("announced");
   const [dateIndex, setDateIndex] = useState<number>(-1);
   const [polygonSeries, setPolygonSeries] = useState<am5map.MapPolygonSeries | null>(null);
+  const [heatLegend, setHeatLegend] = useState<HeatLegend | null>(null);
   const dateIndexRef = useRef(dateIndex); // Need to pass this value into a callback in the use effect
   const oldData = useRef<AmChartsData[]>([]);
+  const fieldRef = useRef(field);
 
   useEffect(() => {
     if (polygonSeries) {
+      polygonSeries.set("valueField", field);
+      polygonSeries.mapPolygons.template.set("tooltipText", field === "percentValue" ? `{name}: {${field}}%` : `{name}: {approxValueFormatted}`);
+      const originalHeatRule = polygonSeries.get("heatRules")![0];
+      const newHeatRule = {
+        ...originalHeatRule,
+        maxValue: field === "percentValue" ? 150 : undefined,
+      };
+      polygonSeries.set("heatRules", [newHeatRule]);
+    }
+    if (heatLegend) {
+      heatLegend.setAll({
+        endValue: field === "percentValue" ? 150 : undefined,
+        startText: field === "percentValue" ? "0% Tariff" : "$0 Tariffed",
+        stepCount: field === "percentValue" ? 15 : 100,
+      })
+      if (field === "percentValue") {
+        heatLegend.set("endText", "150% Tariff");
+      }
+    }
+  }, [field]);
+
+  useEffect(() => {
+    let maxValue = 0;
+    if (polygonSeries) {
       const mappedData: AmChartsData[] = dateIndex === -1 ? [] : FLATTENED_TARIFF_DATA.get(dates[dateIndex])!.filter((d) => d.type === type).map(d => {
+        maxValue = Math.max(maxValue, d[field]);
         return {
           id: d.id,
           [field]: d[field],
@@ -62,10 +92,23 @@ function AmChartsMap() {
         const isDifferent = oldItem[field] !== d[field];
         return isDifferent;
       }).map(d => d.id);
+      console.log({
+        mappedData, diffItems,
+        filtered: mappedData.filter(d => diffItems.includes(d.id)),
+      });
       oldData.current = mappedData;
       polygonSeries.mapPolygons.values
         .filter(polygon => polygon.dataItem && diffItems.includes((polygon.dataItem as DataItem<AmChartsData>).get("id")))
-        .forEach(polygon => polygon.appear(1000));
+        .forEach((polygon) => {
+          polygon.appear(1000);
+        });
+      if (field !== "percentValue") {
+        const endValue = Math.max(maxValue, 1_000_000);
+        heatLegend!.setAll({
+          endValue,
+          endText: `${formatLargeMoney(endValue)} Tariffed`,
+        });
+      }
     }
   }, [polygonSeries, dateIndex, field, type]);
 
@@ -78,6 +121,10 @@ function AmChartsMap() {
   useEffect(() => {
     dateIndexRef.current = dateIndex;
   }, [dateIndex]);
+
+  useEffect(() => {
+    fieldRef.current = field;
+  }, [field]);
 
   useEffect(() => {
     // Create root
@@ -93,7 +140,6 @@ function AmChartsMap() {
       panX: "rotateX",
       panY: "none",
       projection: am5map.geoMercator(),
-      // projection: am5map.geoAlbersUsa(),
       layout: root.horizontalLayout,
     }));
 
@@ -102,26 +148,24 @@ function AmChartsMap() {
       // geoJSON: am5geodataUSALow,
       geoJSON: am5geodataWorldLow,
       valueField: field,
-      calculateAggregates: true
+      calculateAggregates: true,
+      exclude: ["AQ"], // Hide Antarctica
     }));
+    // chart.seriesContainer.set("paddingBottom", 50);
 
     setPolygonSeries(polygonSeries);
-
-    // Hide antartica
-    polygonSeries.set("exclude", ["AQ"]);
-    polygonSeries.mapPolygons.template.setAll({
-      tooltipText: field === "percentValue" ? `{name}: {${field}}%` : `{name}: {approxValueFormatted}`
-    });
 
     polygonSeries.set("heatRules", [{
       target: polygonSeries.mapPolygons.template,
       dataField: "value",
       min: am5color(0xd3a29f), // Green
-      max: am5color(0x6f0600), // Red
+      max: am5color(0x330000), // Red
       key: "fill",
       minValue: 0,
-      maxValue: field === "percentValue" ? 50 : undefined,
+      maxValue: field === "percentValue" ? 150 : undefined,
     }]);
+
+    polygonSeries.mapPolygons.template.set("tooltipText", field === "percentValue" ? `{name}: {${field}}%` : `{name}: {approxValueFormatted}`);
 
     const heatLegendContainer = chart.children.push(Container.new(root, {
       layout: root.horizontalLayout,
@@ -137,15 +181,17 @@ function AmChartsMap() {
       orientation: "horizontal",
       startColor: am5color(0xd3a29f),
       startValue: 0,
-      endValue: field === "percentValue" ? 50 : undefined,
-      endColor: am5color(0x6f0600),
-      startText: "No Tariff",
-      endText: field === "percentValue" ? "50% Tariff" : "Most Tariffed",
-      stepCount: field === "percentValue" ? 5 : 100,
+      endValue: field === "percentValue" ? 150 : undefined,
+      endColor: am5color(0x330000),
+      startText: field === "percentValue" ? "0% Tariff" : "$0 Tariffed",
+      endText: field === "percentValue" ? "150% Tariff" : "Most Tariffed",
+      stepCount: field === "percentValue" ? 15 : 100,
     }));
 
+    setHeatLegend(heatLegend);
+
     polygonSeries.mapPolygons.template.events.on("pointerover", function (ev) {
-      heatLegend.showValue(Number((ev.target.dataItem as DataItem<AmChartsData>).get(field)));
+      heatLegend.showValue(Number((ev.target.dataItem as DataItem<AmChartsData>).get(fieldRef.current)));
     });
 
     heatLegend.startLabel.setAll({
@@ -158,22 +204,6 @@ function AmChartsMap() {
       fill: heatLegend.get("endColor")
     });
 
-    // change this to template when possible
-    polygonSeries.events.on("datavalidated", function () {
-      // console.log({ low: polygonSeries.getPrivate("valueLow"), high: polygonSeries.getPrivate("valueHigh") });
-      // const low = polygonSeries.getPrivate("valueLow")!;
-      const high = polygonSeries.getPrivate("valueHigh") ?? 0;
-      // heatLegend.set("startValue", polygonSeries.getPrivate("valueLow"));
-      // heatLegend.set("endValue", Math.max(polygonSeries.getPrivate("valueHigh") ?? 0, 100));
-      if (field !== "percentValue") {
-        const endValue = Math.max(high, 1_000_000);
-        heatLegend.setAll({
-          endValue,
-          endText: formatLargeMoney(endValue),
-        });
-      }
-    })
-
     // Set clicking on "water" to zoom out
     chart.chartContainer.get("background")!.events.on("click", function () {
       chart.goHome();
@@ -184,12 +214,12 @@ function AmChartsMap() {
 
     const container = chart.children.push(Container.new(root, {
       y: am5p100,
-      centerX: am5p50,
+      centerX: am5percent(55),
       centerY: am5p100,
-      x: am5percent(50),
+      x: am5percent(55),
       width: am5percent(135),
       layout: root.horizontalLayout,
-      paddingBottom: 10
+      dy: -10,
     }));
 
     const playButton = container.children.push(Button.new(root, {
@@ -204,7 +234,7 @@ function AmChartsMap() {
     const slider = container.children.push(Slider.new(root, {
       orientation: "horizontal",
       start: 0,
-      centerY: am5p50
+      centerY: am5p50,
     }));
 
     playButton.events.on("click", function () {
@@ -285,7 +315,7 @@ function AmChartsMap() {
 
     const fieldContainer = chart.children.push(Container.new(root, {
       layout: root.horizontalLayout,
-      x: am5percent(15),
+      x: am5percent(25),
       centerX: am5p100,
       y: am5percent(100),
       dy: -40
@@ -324,15 +354,21 @@ function AmChartsMap() {
     return () => {
       root.dispose();
     }
-  }, [field]);
+  }, []);
 
-  return <div style={{ width: "100%", height: "95vh" }} id="chartdiv" />
+  return <div style={{ width: "100%", height: "75vh" }} id="chartdiv" />
 }
 
 
 function App() {
   return (
-    <AmChartsMap />
+    <div>
+      <div style={{ textAlign: "center", fontSize: "2rem", marginBottom: "1rem", width: "75%", marginLeft: "auto", marginRight: "auto" }}>
+        <h1>The Effect of Trump Tariffs</h1>
+        <p>In under 3 months, Trump has announced and implemented radical tariffs that affect the entire rest of the world. The map shows the approximate value of the tariffs, and attempts to put the insane numbers to scale.</p>
+      </div>
+      <AmChartsMap />
+    </div>
   )
 }
 
