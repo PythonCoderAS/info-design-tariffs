@@ -239,7 +239,7 @@ function AmChartsMap() {
   const [hoveredCountry, setHoveredCountry] = useState<Valid2DigitCountryCodesWithoutUSA | null>(null);
   const [clickedCountry, setClickedCountry] = useState<Valid2DigitCountryCodesWithoutUSA | null>(null);
   const clickedCountryRef = useRef(clickedCountry);
-  const { visualizationCountry, visualizationValueUSD } = useMemo<{ visualizationCountry: string | null, visualizationValueUSD: number }>(() => {
+  const { visualizationValueUSD } = useMemo<{ visualizationCountry: string | null, visualizationValueUSD: number }>(() => {
     const effectiveCountry = clickedCountry || hoveredCountry;
     if (!FLATTENED_TARIFF_DATA.get(dates[dateIndex])) {
       return {
