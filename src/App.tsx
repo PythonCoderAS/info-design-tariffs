@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 /* Imports */
-import { Button, Container, Graphics, HeatLegend, Root, color as am5color, p0 as am5p0, p50 as am5p50, p100 as am5p100, percent as am5percent, Slider, Label, Circle } from "@amcharts/amcharts5/index";
+import { Button, Container, Graphics, HeatLegend, Root, color as am5color, p0 as am5p0, p50 as am5p50, p100 as am5p100, percent as am5percent, Slider, Label, Circle, RoundedRectangle } from "@amcharts/amcharts5/index";
 import * as am5map from "@amcharts/amcharts5/map";
 import am5geodataWorldLow from "@amcharts/amcharts5-geodata/worldLow";
-// import am5geodataUSALow from "@amcharts/amcharts5-geodata/usaLow";
+import am5geodataUSALow from "@amcharts/amcharts5-geodata/usaLow";
 import am5themes_Animated from "@amcharts/amcharts5/themes/Animated";
 import dayjs from 'dayjs';
 import { DataItem, IComponentDataItem } from '@amcharts/amcharts5/.internal/core/render/Component';
-import { FLATTENED_TARIFF_DATA, FlattenedTariffDataEntry, TariffType, Valid2DigitCountryCodesWithoutUSA } from './data';
+import { FLATTENED_TARIFF_DATA, FlattenedTariffDataEntry, TariffType, Valid2DigitCountryCodesWithoutUSA, GDP_PER_STATE_MILLIONS, POP_PER_STATE_2020_CENSUS, ValidStateCodes, validStateCodes, Valid2DigitCountryCodes } from './data';
+import PersonSVG from './personSVG';
 
 
 const dates = [...FLATTENED_TARIFF_DATA.keys()];
@@ -34,9 +35,196 @@ function formatLargeMoney(value: number) {
   return `$${valueTo100ths} ${specifier}`;
 }
 
+function formatLargeValue(value: number) {
+  // Add commas for every 3 digits
+  const valueString = value.toString();
+  const reversedValueString = valueString.split("").reverse().join("");
+  let ret = "";
+  for (let i = 0; i < reversedValueString.length; i++) {
+    if (i > 0 && i % 3 === 0) {
+      ret = "," + ret;
+    }
+    ret = reversedValueString[i] + ret;
+  }
+  return ret;
+}
+
 interface AmChartsData extends IComponentDataItem, Partial<Pick<FlattenedTariffDataEntry, Exclude<keyof FlattenedTariffDataEntry, "id" | "date" | "type" | "color">>> {
   id: Valid2DigitCountryCodesWithoutUSA;
   approxValueFormatted?: string;
+}
+
+/**
+ * 
+ * @param {Object} props
+ * @param {number} props.valueUSD - The value in USD to be displayed
+ * @param {boolean} [props.lowestFirst=true] - Whether to display the states with the lowest population/GDP first
+ * @param {number} props.averageSalary - The average salary to use if using uniform distribution (do not include this value to show how many entire states' GDPs compose valueUSD, include this value to show how many people in each state * average salary compose valueUSD)
+ * @param {string} props.id - The unique ID of the map
+ * @returns {JSX.Element} - The AmChartsUSAMap component
+ */
+function AmChartsUSAMap({ valueUSD, averageSalary, id }: { valueUSD: number, averageSalary: number, id: string }) {
+  const [polygonSeries, setPolygonSeries] = useState<am5map.MapPolygonSeries | null>(null);
+  const [lowestFirst, setLowestFirst] = useState(true);
+  const [usingAverageSalary, setUsingAverageSalary] = useState(false);
+  const data = useMemo(() => {
+    let stateValue: Record<ValidStateCodes, number> = Object.fromEntries(Object.entries(GDP_PER_STATE_MILLIONS).map(([state, gdp]) => [state, gdp * 1_000_000])) as Record<ValidStateCodes, number>; // Need to multiply by one million to get the real value
+    if (usingAverageSalary) {
+      if (averageSalary <= 0) {
+        throw new Error("Average salary must be greater than 0");
+      }
+      stateValue = Object.fromEntries(Object.entries(POP_PER_STATE_2020_CENSUS).map(([state, pop]) => [state, pop * averageSalary])) as Record<ValidStateCodes, number>;
+    }
+    const states: ValidStateCodes[] = [];
+    let combinedValue = 0;
+    let sortedData = Object.entries(stateValue).toSorted(([, valueA], [, valueB]) => valueA - valueB);
+    console.log(sortedData);
+    if (lowestFirst) {
+      for (let i = 0; i < sortedData.length && combinedValue + sortedData[i][1] <= valueUSD; i++) {
+        const [state, value] = sortedData[i];
+        combinedValue += value;
+        states.push(state as ValidStateCodes);
+      }
+    } else {
+      sortedData = sortedData.reverse();
+      for (const [state, value] of sortedData) {
+        if (combinedValue + value > valueUSD) {
+          continue;
+        }
+        combinedValue += value;
+        states.push(state as ValidStateCodes);
+      }
+    }
+    const data = validStateCodes.map((state) => ({
+      id: `US-${state}`,
+      value: stateValue[state],
+      formattedValue: usingAverageSalary ? formatLargeValue(POP_PER_STATE_2020_CENSUS[state]) : formatLargeMoney(stateValue[state]),
+      active: states.includes(state),
+    }));
+    return data;
+  }, [valueUSD, lowestFirst, usingAverageSalary, averageSalary])
+
+  useEffect(() => {
+    if (polygonSeries) {
+      polygonSeries.data.setAll(data);
+      const activeStates = data.filter(d => d.active).map(d => d.id);
+      polygonSeries.mapPolygons.values
+        .filter(polygon => polygon.dataItem && activeStates.includes((polygon.dataItem as DataItem<AmChartsData>).get("id")))
+        .forEach((polygon) => {
+          polygon.set("active", true);
+        });
+    }
+  }, [polygonSeries, data]);
+
+  useEffect(() => {
+    // Create root
+    const root = Root.new(id, {});
+
+    // Set themes
+    root.setThemes([
+      am5themes_Animated.new(root)
+    ]);
+
+    // Create chart
+    const chart = root.container.children.push(am5map.MapChart.new(root, {
+      panX: "rotateX",
+      panY: "none",
+      projection: am5map.geoAlbersUsa(),
+      layout: root.horizontalLayout,
+    }));
+
+    // Create polygon series
+    const polygonSeries = chart.series.push(am5map.MapPolygonSeries.new(root, {
+      geoJSON: am5geodataUSALow,
+      valueField: "value",
+    }));
+
+    setPolygonSeries(polygonSeries);
+
+    polygonSeries.mapPolygons.template.set("tooltipText", `{name}: {formattedValue}`);
+    polygonSeries.mapPolygons.template.states.create("active", {
+      fill: root.interfaceColors.get("primaryButtonActive")
+    });
+
+    const lowestContainer = chart.children.push(Container.new(root, {
+      layout: root.horizontalLayout,
+      x: am5percent(70),
+      centerX: am5p100,
+      y: am5percent(100),
+      dy: -40,
+    }));
+
+    // Add labels and controls
+    lowestContainer.children.push(Label.new(root, {
+      centerY: am5p50,
+      text: "Smallest States First",
+      fontSize: 16
+    }));
+
+    const lowestSwitchButton = lowestContainer.children.push(Button.new(root, {
+      themeTags: ["switch"],
+      centerY: am5p50,
+      icon: Circle.new(root, {
+        themeTags: ["icon"]
+      }),
+      active: !lowestFirst,
+    }));
+
+    lowestSwitchButton.on("active", function () {
+      setLowestFirst(!lowestSwitchButton.get("active"))
+    });
+
+    lowestContainer.children.push(
+      Label.new(root, {
+        centerY: am5p50,
+        text: "Largest States First",
+        fontSize: 16
+      })
+    );
+
+    const usingAverageSalaryContainer = chart.children.push(Container.new(root, {
+      layout: root.horizontalLayout,
+      x: am5percent(35),
+      centerX: am5p100,
+      y: am5percent(100),
+      dy: -40,
+    }));
+
+    // Add labels and controls
+    usingAverageSalaryContainer.children.push(Label.new(root, {
+      centerY: am5p50,
+      text: "Real GDP of State",
+      fontSize: 16
+    }));
+
+    const usingAverageSalarySwitchButton = usingAverageSalaryContainer.children.push(Button.new(root, {
+      themeTags: ["switch"],
+      centerY: am5p50,
+      icon: Circle.new(root, {
+        themeTags: ["icon"]
+      }),
+      active: usingAverageSalary,
+    }));
+
+    usingAverageSalarySwitchButton.on("active", function () {
+      setUsingAverageSalary(usingAverageSalarySwitchButton.get("active")!)
+    });
+
+    usingAverageSalaryContainer.children.push(
+      Label.new(root, {
+        centerY: am5p50,
+        text: "Population of State",
+        fontSize: 16
+      })
+    );
+
+
+    return () => {
+      root.dispose();
+    }
+  }, [id]);
+
+  return <div style={{ width: "100%", height: "50vh" }} id={id} />
 }
 
 function AmChartsMap() {
@@ -48,6 +236,32 @@ function AmChartsMap() {
   const dateIndexRef = useRef(dateIndex); // Need to pass this value into a callback in the use effect
   const oldData = useRef<AmChartsData[]>([]);
   const fieldRef = useRef(field);
+  const [hoveredCountry, setHoveredCountry] = useState<Valid2DigitCountryCodesWithoutUSA | null>(null);
+  const [clickedCountry, setClickedCountry] = useState<Valid2DigitCountryCodesWithoutUSA | null>(null);
+  const clickedCountryRef = useRef(clickedCountry);
+  const { visualizationCountry, visualizationValueUSD } = useMemo<{ visualizationCountry: string | null, visualizationValueUSD: number }>(() => {
+    const effectiveCountry = clickedCountry || hoveredCountry;
+    if (!FLATTENED_TARIFF_DATA.get(dates[dateIndex])) {
+      return {
+        visualizationCountry: null,
+        visualizationValueUSD: 0,
+      }
+    }
+    const globalTariffsValue = FLATTENED_TARIFF_DATA.get(dates[dateIndex])!.filter(d => d.type === type).reduce((acc, d) => acc + d.approximateValueOfImportsImpacted, 0);
+    if (effectiveCountry === null || !polygonSeries) {
+      return {
+        visualizationCountry: null,
+        visualizationValueUSD: globalTariffsValue,
+      }
+    }
+    const countryData = FLATTENED_TARIFF_DATA.get(dates[dateIndex])!.find((d) => d.id === effectiveCountry && d.type === type);
+    // @ts-expect-error I don't have the correct type to even fix this
+    const countryName = polygonSeries.mapPolygons.values.find((polygon) => polygon.dataItem && (polygon.dataItem as DataItem<AmChartsData>).get("id") === effectiveCountry && polygon.dataItem.name)?.get("name") || "Unknown";
+    return {
+      visualizationCountry: countryName,
+      visualizationValueUSD: countryData ? countryData.approximateValueOfImportsImpacted : 0,
+    }
+  }, [clickedCountry, hoveredCountry, polygonSeries, dates, dateIndex, type]);
 
   useEffect(() => {
     if (polygonSeries) {
@@ -127,6 +341,10 @@ function AmChartsMap() {
   }, [field]);
 
   useEffect(() => {
+    clickedCountryRef.current = clickedCountry;
+  }, [clickedCountry]);
+
+  useEffect(() => {
     // Create root
     const root = Root.new("chartdiv", {});
 
@@ -165,7 +383,11 @@ function AmChartsMap() {
       maxValue: field === "percentValue" ? 150 : undefined,
     }]);
 
-    polygonSeries.mapPolygons.template.set("tooltipText", field === "percentValue" ? `{name}: {${field}}%` : `{name}: {approxValueFormatted}`);
+    polygonSeries.mapPolygons.template.setAll({
+      tooltipText: field === "percentValue" ? `{name}: {${field}}%` : `{name}: {approxValueFormatted}`,
+      nonScalingStroke: true,
+      cursorOverStyle: "pointer",
+    })
 
     const heatLegendContainer = chart.children.push(Container.new(root, {
       layout: root.horizontalLayout,
@@ -192,6 +414,36 @@ function AmChartsMap() {
 
     polygonSeries.mapPolygons.template.events.on("pointerover", function (ev) {
       heatLegend.showValue(Number((ev.target.dataItem as DataItem<AmChartsData>).get(fieldRef.current)));
+      const dataItem = ev.target.dataItem as DataItem<AmChartsData>;
+      const id = dataItem.get("id");
+      setHoveredCountry(id);
+    });
+
+    polygonSeries.mapPolygons.template.events.on("pointerout", function () {
+      setHoveredCountry(null);
+    });
+
+    polygonSeries.mapPolygons.template.events.on("click", function (ev) {
+      const dataItem = ev.target.dataItem as DataItem<AmChartsData>;
+      const id = dataItem.get("id") as Valid2DigitCountryCodes;
+      if (id === "US") {
+        return;
+      }
+      if (clickedCountryRef.current) {
+        polygonSeries.mapPolygons.values.filter(polygon => polygon.dataItem && (polygon.dataItem as DataItem<AmChartsData>).get("id") === clickedCountryRef.current).forEach((polygon) => {
+          polygon.remove("stroke");
+          polygon.remove("strokeWidth");
+        });
+      }
+      if (clickedCountryRef.current === id) {
+        setClickedCountry(null);
+      } else {
+        setClickedCountry(id);
+        polygonSeries.mapPolygons.values.filter(polygon => polygon.dataItem && (polygon.dataItem as DataItem<AmChartsData>).get("id") === id).forEach((polygon) => polygon.setAll({
+          "stroke": root.interfaceColors.get("primaryButtonActive"),
+          "strokeWidth": 4,
+        }));
+      }
     });
 
     heatLegend.startLabel.setAll({
@@ -217,10 +469,26 @@ function AmChartsMap() {
       centerX: am5percent(55),
       centerY: am5p100,
       x: am5percent(55),
-      width: am5percent(135),
+      width: am5percent(55),
       layout: root.horizontalLayout,
       dy: -10,
     }));
+
+    const prevButton = container.children.push(Button.new(root, {
+      centerY: am5p50,
+      marginRight: 5,
+      label: Label.new(root, {
+        text: "<",
+      }),
+      tooltipText: "Previous",
+    }));
+
+    (prevButton.get("background") as RoundedRectangle).setAll({
+      cornerRadiusBL: 100,
+      cornerRadiusTL: 100,
+      cornerRadiusTR: 100,
+      cornerRadiusBR: 100,
+    });
 
     const playButton = container.children.push(Button.new(root, {
       themeTags: ["play"],
@@ -235,7 +503,10 @@ function AmChartsMap() {
       orientation: "horizontal",
       start: 0,
       centerY: am5p50,
+      marginRight: 10
     }));
+
+
 
     playButton.events.on("click", function () {
       if (playButton.get("active")) {
@@ -258,6 +529,47 @@ function AmChartsMap() {
       paddingBottom: 0,
       paddingLeft: 0
     }));
+
+    const nextButton = container.children.push(Button.new(root, {
+      centerY: am5p50,
+      marginLeft: 30,
+      label: Label.new(root, {
+        text: ">",
+      }),
+      tooltipText: "Next",
+    }));
+
+    (nextButton.get("background") as RoundedRectangle).setAll({
+      cornerRadiusBL: 100,
+      cornerRadiusTL: 100,
+      cornerRadiusTR: 100,
+      cornerRadiusBR: 100,
+    });
+
+
+    prevButton.events.on("click", function () {
+      prevButton.set("active", false);
+      if (dateIndexRef.current > 0) {
+        const lastDateMillis = dayjs(dates[dates.length - 1]).valueOf();
+        const firstDateMillis = dayjs("2025-01-20").valueOf(); // Inauguration date
+        setDateIndex(dateIndexRef.current - 1);
+        const date = dates[dateIndexRef.current - 1];
+        const dateInRangePercent = (dayjs(date).valueOf() - firstDateMillis) / (lastDateMillis - firstDateMillis);
+        slider.set("start", dateInRangePercent);
+      }
+    });
+
+    nextButton.events.on("click", function () {
+      nextButton.set("active", false);
+      if (dateIndexRef.current < dates.length - 1) {
+        const lastDateMillis = dayjs(dates[dates.length - 1]).valueOf();
+        const firstDateMillis = dayjs("2025-01-20").valueOf(); // Inauguration date
+        setDateIndex(dateIndexRef.current + 1);
+        const date = dates[dateIndexRef.current + 1];
+        const dateInRangePercent = (dayjs(date).valueOf() - firstDateMillis) / (lastDateMillis - firstDateMillis);
+        slider.set("start", dateInRangePercent);
+      }
+    });
 
     slider.events.on("rangechanged", function () {
       const lastDateMillis = dayjs(dates[dates.length - 1]).valueOf();
@@ -356,14 +668,24 @@ function AmChartsMap() {
     }
   }, []);
 
-  return <div style={{ width: "100%", height: "75vh" }} id="chartdiv" />
+  return <div><div style={{ width: "100%", height: "50vh" }} id="chartdiv" />
+    <div className='textblock'>
+      <div><small>Hover over a country to view visualizations of the tariffs on that country in terms of US states population/GDP.</small></div>
+      <div><small>Click a country to lock it, and click it again to unlock the country and make hover functional.</small></div>
+    </div>
+    <div className='textblock'>
+      <h2>Visualizations</h2>
+      <div style={{ display: "flex", alignContent: 'center', alignItems: "center" }}><span><PersonSVG width='75px' /></span><span>= $66,200 / year</span></div>
+      <AmChartsUSAMap id="average-salary-map" valueUSD={visualizationValueUSD} averageSalary={66_200} />
+    </div>
+  </div>
 }
 
 
 function App() {
   return (
     <div>
-      <div style={{ textAlign: "center", fontSize: "2rem", marginBottom: "1rem", width: "75%", marginLeft: "auto", marginRight: "auto" }}>
+      <div className='textblock'>
         <h1>The Effect of Trump Tariffs</h1>
         <p>In under 3 months, Trump has announced and implemented radical tariffs that affect the entire rest of the world. The map shows the approximate value of the tariffs, and attempts to put the insane numbers to scale.</p>
       </div>
